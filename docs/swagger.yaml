@@ -1,0 +1,135 @@
+basePath: /
+definitions:
+  Model.LoginModel:
+    properties:
+      password:
+        type: string
+      username:
+        type: string
+    type: object
+  Model.Person:
+    properties:
+      age:
+        type: integer
+      gender:
+        type: string
+      name:
+        type: string
+      password:
+          type: string
+      username:
+          type: string
+    type: object
+host: localhost:1923
+info:
+  contact: {}
+  description: Bu API, kişileri listelemek, eklemek ve isim bazında sorgulamak için
+    kullanılır.
+  title: Person API
+  version: "1.0"
+paths:
+  /login:
+    post:
+      consumes:
+      - application/json
+      description: Kullanıcı adı ve şifre ile giriş yapar
+      parameters:
+      - description: Kullanıcı Girişi
+        in: body
+        name: credentials
+        required: true
+        schema:
+          $ref: '#/definitions/Model.LoginModel'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Başarılı giriş
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Geçersiz giriş verisi
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Yetkisiz erişim
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Kullanıcı Girişi
+      tags:
+      - auth
+  /person:
+    post:
+      consumes:
+      - application/json
+      description: JSON formatında yeni bir kişi ekler
+      parameters:
+      - description: Yeni kişi
+        in: body
+        name: person
+        required: true
+        schema:
+          $ref: '#/definitions/Model.Person'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/Model.Person'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Yeni bir kişi ekle
+      tags:
+      - persons
+  /person/{name}:
+    get:
+      description: İstenilen isme sahip kişiyi getirir
+      parameters:
+      - description: Kişi İsmi
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/Model.Person'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Belirli bir isme sahip kişiyi getir
+      tags:
+      - persons
+  /persons:
+    get:
+      description: Veritabanındaki tüm kişileri getirir
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/Model.Person'
+            type: array
+      summary: Tüm kişileri getir
+      tags:
+      - persons
+swagger: "2.0"

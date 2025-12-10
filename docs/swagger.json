@@ -1,0 +1,205 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Bu API, kişileri listelemek, eklemek ve isim bazında sorgulamak için kullanılır.",
+        "title": "Person API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "host": "localhost:1923",
+    "basePath": "/",
+    "paths": {
+        "/login": {
+            "post": {
+                "description": "Kullanıcı adı ve şifre ile giriş yapar",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Kullanıcı Girişi",
+                "parameters": [
+                    {
+                        "description": "Kullanıcı Girişi",
+                        "name": "credentials",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/Model.LoginModel"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Başarılı giriş",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Geçersiz giriş verisi",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Yetkisiz erişim",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/person": {
+            "post": {
+                "description": "JSON formatında yeni bir kişi ekler",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "persons"
+                ],
+                "summary": "Yeni bir kişi ekle",
+                "parameters": [
+                    {
+                        "description": "Yeni kişi",
+                        "name": "person",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/Model.Person"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/Model.Person"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/person/{name}": {
+            "get": {
+                "description": "İstenilen isme sahip kişiyi getirir",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "persons"
+                ],
+                "summary": "Belirli bir isme sahip kişiyi getir",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Kişi İsmi",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/Model.Person"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/persons": {
+            "get": {
+                "description": "Veritabanındaki tüm kişileri getirir",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "persons"
+                ],
+                "summary": "Tüm kişileri getir",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/Model.Person"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "Model.LoginModel": {
+            "type": "object",
+            "properties": {
+                "password": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "Model.Person": {
+            "type": "object",
+            "properties": {
+                "age": {
+                    "type": "integer"
+                },
+                "gender": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                },
+                "password": {
+                    "type": "string"
+                }
+            }
+        }
+    }
+}

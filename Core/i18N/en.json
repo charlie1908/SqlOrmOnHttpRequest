@@ -1,0 +1,4 @@
+{
+  "ratelimit_exceed": "Rate limit exceeded. Try again later.",
+  "unauthorized": "Unauthorized access"
+}

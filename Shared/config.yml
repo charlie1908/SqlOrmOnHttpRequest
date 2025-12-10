@@ -1,0 +1,25 @@
+encryption:
+  bytes: "35, 46, 57, 24, 85, 35, 24, 74, 87, 35, 88, 98, 66, 32, 14, 05"
+redis:
+  password: "0XWZhIeMB7H5r34O"
+  tokenExpireTime: 60
+  refreshTokenExpireTime: 90
+  url: "hivu2MeTE67x1noOI1k="
+elastic:
+  username: "0nW4hYPUQA=="
+  password: "8ii4hYPUQNPziS1PdwhRaevqymWj2eI="
+  #url: "322ths2SDLH53mIMIlg/LsnsMUrFdn5w"
+  url: "322thoSHDK/x1X4TJVYpMadamuKERhjbwpF3"
+  elasticLoginIndex: "logingo"
+  elasticErrorIndex: "errorgo"
+  elasticAuditIndex: "auditgo"
+database:
+  #sqlurl: "xGi1hZLPVeWy1mMSZwErXgfWDQxnBidTNtvstACvGeZC/k0QigEvgsOBVF5LR/WWsYhTnEoxeEg/A7k5gj4/7a3DJHQ9yzvAItoCjsEU5Jm1"
+  sqlurl: "xGi1hZLPVeWy1mMSZwErXgfWDQxnBidTNtvstACvGeZG4FQbjAYmgMjWBhVOROCEQFm78Q7yHwPCrOIyWRi2sMq6PJAQIskLOlsYGNqFvSukSPWjVt4E4Yy+D08+XipNTklX"
+  sqltimeout: 30 #Second
+rabbitMQ:
+  port: 5672
+  host: "23a6l5vVTPO0"
+  username: "w3yqgg=="
+  password: "w3yqgg=="
+lang: "tr"

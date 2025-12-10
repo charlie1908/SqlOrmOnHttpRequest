@@ -1,0 +1,4 @@
+{
+  "ratelimit_exceed": "Rate Limit sınırı aşıldı. Daha sonra tekrar deneyin..",
+  "unauthorized": "Yetkisiz Erişim"
+}
