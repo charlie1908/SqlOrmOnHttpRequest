@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/gin-gonic/gin"
 	"httpRequestName/Core"
 	"httpRequestName/DB"
 	"httpRequestName/Model"
@@ -36,6 +35,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/gin-gonic/gin"
 )
 
 func GetUserPermissions(userName string, controllerID int, actionNumber int, actionName string, c *gin.Context) (bool, error) {
@@ -219,6 +220,7 @@ func GetAllUsers(c *gin.Context) Model.ServiceResponse[Model.Person] {
 	response := Model.NewServiceResponse[Model.Person](c)
 	// Call the generic GetAll method from the repository to get all users
 	users, err := repo.GetAll(c)
+	//users, err := repo.GetAllWithPaging(c, 2, 2, false)
 	if err != nil {
 		fmt.Println("Error fetching users:", err)
 		response.Error = err

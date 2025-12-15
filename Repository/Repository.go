@@ -4,14 +4,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	mssql "github.com/denisenkom/go-mssqldb"
-	"github.com/gin-gonic/gin"
 	"httpRequestName/Core"
 	"httpRequestName/DB"
 	"httpRequestName/Model"
 	"reflect"
 	"sort"
 	"strings"
+
+	mssql "github.com/denisenkom/go-mssqldb"
+	"github.com/gin-gonic/gin"
 )
 
 // Repository is the generic repository struct for handling database operations.
@@ -420,7 +421,8 @@ func getTableName[T any]() string {
 		tableName = strings.ToUpper(reflect.TypeOf(new(T)).Elem().Name())
 	}
 
-	if strings.Contains(tableName, "; \t\n") {
+	//if strings.Contains(tableName, "; \t\n") {
+	if strings.ContainsAny(tableName, ";\t \n") {
 		panic("Invalid table name: " + tableName)
 	}
 	return tableName
@@ -482,6 +484,168 @@ func (repo *Repository[T]) GetAll(c *gin.Context) ([]T, error) {
 	}
 
 	return records, nil
+}
+
+// GetAllWithPaging
+// Paging + sıralama [ASC/DESC] parametrik sekilde kayıtları getirir. Default "ASC"
+//
+// Uyari:
+// 1- orderBy SADECE "Id" veya "CreatedDate" olabilir. Istenirse degistirilebilir
+// 2- Başka bir değer gelirse veya bos ise default "Id" kullanılır.
+// 3- ASC/DESC yönü bool ile belirlenir. Default degeri "ASC"'dir
+//
+// Hata kontrolleri:
+//   - orderBy = CreatedDate seçilmişse ama tabloda CreatedDate yoksa,
+//     hatayı yakalayıp ORDER BY Id ile tekrar dener. Fazladan ekledim. Cikarilabilir.
+
+// Kullanım Ornekleri:
+//
+//	repo.GetAllWithPaging(c, 1, 10)                 // Id ASC (default)
+//	repo.GetAllWithPaging(c, 1, 10, "Id", false)     // Id DESC
+//	repo.GetAllWithPaging(c, 1, 10, "Id")            // Id ASC
+//	repo.GetAllWithPaging(c, 1, 10, "CreatedDate")   // CreatedDate ASC
+//	repo.GetAllWithPaging(c, 1, 10, true)            // Id ASC
+//	repo.GetAllWithPaging(c, 1, 10, false)           // Id DESC
+func (repo *Repository[T]) GetAllWithPaging(
+	c *gin.Context,
+	page int,
+	pageSize int,
+	params ...interface{},
+) ([]T, error) {
+
+	records := make([]T, 0)
+
+	// --- Varsayılanlar ---
+	requestedOrderBy := ""
+	orderDirection := "ASC"
+
+	// --- Variadic parametreleri çözümle (string=orderBy, bool=isAscending) ---
+	for _, p := range params {
+		switch v := p.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				requestedOrderBy = strings.TrimSpace(v)
+			}
+		case bool:
+			if v {
+				orderDirection = "ASC"
+			} else {
+				orderDirection = "DESC"
+			}
+		}
+	}
+
+	// --- orderBy whitelist (sadece Id veya CreatedDate) ---
+	orderBy := "Id" // default
+	// Her zaman kucuk harfe cevirildi..
+	switch strings.ToLower(requestedOrderBy) {
+	case "id":
+		orderBy = "Id"
+	case "createddate":
+		orderBy = "CreatedDate"
+	}
+
+	// --- Paging kontrolleri ---
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	offset := (page - 1) * pageSize
+
+	db, ctx := DB.SqlOpen(c)
+	defer db.Close()
+
+	tableName := getTableName[T]()
+
+	// Sorguyu çalıştıran küçük bir fonksiyon (tekrar denemek için)
+	runQuery := func(ob string) ([]T, error) {
+		out := make([]T, 0)
+
+		query := fmt.Sprintf(`
+			SELECT *
+			FROM %s
+			WHERE ISNULL(IsDeleted, 0) = 0
+			ORDER BY %s %s
+			OFFSET @offset ROWS
+			FETCH NEXT @pageSize ROWS ONLY
+		`, tableName, ob, orderDirection)
+
+		rows, err := db.QueryContext(
+			*ctx,
+			query,
+			sql.Named("offset", offset),
+			sql.Named("pageSize", pageSize),
+		)
+		if err != nil {
+			return out, err
+		}
+		defer rows.Close()
+
+		columns, err := rows.Columns()
+		if err != nil {
+			return out, err
+		}
+
+		for rows.Next() {
+			var record T
+			columnPointers := make([]interface{}, len(columns))
+
+			for i, col := range columns {
+				field := getStructFieldByName(&record, col)
+				if field.IsValid() && field.CanAddr() {
+					columnPointers[i] = field.Addr().Interface()
+				} else {
+					var dummy interface{}
+					columnPointers[i] = &dummy
+				}
+			}
+
+			if err := rows.Scan(columnPointers...); err != nil {
+				return out, err
+			}
+
+			out = append(out, record)
+		}
+
+		if err := rows.Err(); err != nil {
+			return out, err
+		}
+
+		if len(out) == 0 {
+			return out, errors.New("kayıt bulunamadı")
+		}
+
+		return out, nil
+	}
+
+	// 1) İlk deneme: seçilen orderBy ile
+	result, err := runQuery(orderBy)
+	if err == nil {
+		return result, nil
+	}
+
+	// 2) Eğer CreatedDate seçili ve kolon yok hatası geldiyse -> Id ile tekrar dene
+	if strings.EqualFold(orderBy, "CreatedDate") && isInvalidColumnNameErr(err) {
+		return runQuery("Id")
+	}
+
+	return records, err
+}
+
+// isInvalidColumnNameErr
+// SQL Server'da kolon adı geçersiz olduğunda gelen hatayı yakalamaya çalışır.
+// (Genellikle: "Invalid column name 'CreatedDate'.")
+func isInvalidColumnNameErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "invalid column name") || strings.Contains(msg, "geçersiz sütun adı")
 }
 
 func (repo *Repository[T]) GetByID(c *gin.Context, id int) (*T, error) {
