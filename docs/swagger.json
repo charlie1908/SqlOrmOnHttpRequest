@@ -184,6 +184,9 @@
         "Model.Person": {
             "type": "object",
             "properties": {
+              "id": {
+                "type": "integer"
+              },
                 "age": {
                     "type": "integer"
                 },

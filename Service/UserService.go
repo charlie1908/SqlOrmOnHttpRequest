@@ -133,7 +133,7 @@ func GetUserByUserName(name string, c *gin.Context, opts ...bool) Model.ServiceR
 	user := Model.Person{}
 	db, ctx := DB.SqlOpen(c)
 	defer db.Close()
-	row := db.QueryRowContext(*ctx, "select Name as name, Age as age, Gender as gender, UserName as username,Password as password from [dbo].[GoUsers] where  Name= @p1 AND IsDeleted=0", name)
+	row := db.QueryRowContext(*ctx, "select Name as name, Age as age, Gender as gender, UserName as username,Password as password, Id as id from [dbo].[GoUsers] where  Name= @p1 AND IsDeleted=0", name)
 
 	if row.Err() != nil {
 		response.Error = row.Err()
@@ -141,7 +141,7 @@ func GetUserByUserName(name string, c *gin.Context, opts ...bool) Model.ServiceR
 		fmt.Println(row.Err().Error() + "\n")
 		return response
 	}
-	err := row.Scan(&user.Name, &user.Age, &user.Gender, &user.UserName, &user.Password)
+	err := row.Scan(&user.Name, &user.Age, &user.Gender, &user.UserName, &user.Password, &user.Id)
 	if err != nil {
 		//Name ile bulamaz ise UserName'e bakacagiz..updateUser icin..
 		row := db.QueryRowContext(*ctx, "select Name as name, Age as age, Gender as gender, UserName as username,Password as password from [dbo].[GoUsers] where  UserName = @p1 AND IsDeleted=0", name)
@@ -151,7 +151,7 @@ func GetUserByUserName(name string, c *gin.Context, opts ...bool) Model.ServiceR
 			fmt.Println(err.Error() + "\n")
 			return response
 		}
-		err := row.Scan(&user.Name, &user.Age, &user.Gender, &user.UserName, &user.Password)
+		err := row.Scan(&user.Name, &user.Age, &user.Gender, &user.UserName, &user.Password, &user.Id)
 		if err != nil {
 			fmt.Println(err.Error() + "\n")
 		}
@@ -251,6 +251,10 @@ func GetUserById(c *gin.Context, id int) Model.ServiceResponse[Model.Person] {
 	//response := Model.ServiceResponse[Model.Person]{}
 	response := Model.NewServiceResponse[Model.Person](c)
 	// Call the generic GetAll method from the repository to get the user
+	//user, err := repo.FindOne(c, Repository.Filter{Field: "Id", Op: Repository.OpEq, Value: id})
+	//user, err := repo.FindOne(c, Repository.Filter{Field: "Id", Op: Repository.OpGt, Value: id})
+	//encUser, err := Core.Encrypt("borsoft", shared.Config.SECRETKEY)
+	//user, err := repo.FindOne(c, Repository.Filter{Field: "UserName", Op: Repository.OpEq, Value: encUser})
 	user, err := repo.GetByID(c, id)
 	if err != nil {
 		response.Error = fmt.Errorf("failed to get user by ID: %w", err)

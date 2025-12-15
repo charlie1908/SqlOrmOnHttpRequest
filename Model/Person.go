@@ -12,6 +12,7 @@ type Person struct {
 	Gender   string `json:"gender"`
 	UserName string `json:"username" validate:"encrypt"`
 	Password string `json:"password" validate:"hash"`
+	Id       int    `json:"id"`
 }
 
 func (p *Person) TableName() string {

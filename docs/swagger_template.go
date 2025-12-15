@@ -406,6 +406,7 @@ const docTemplate = `{
         "Model.Person": {
             "type": "object",
             "properties": {
+                "id": { "type": "integer" },
                 "age": { "type": "integer" },
                 "gender": { "type": "string" },
                 "name": { "type": "string" },

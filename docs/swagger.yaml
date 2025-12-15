@@ -9,6 +9,8 @@ definitions:
     type: object
   Model.Person:
     properties:
+      id:
+        type: integer
       age:
         type: integer
       gender:

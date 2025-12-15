@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 
 	mssql "github.com/denisenkom/go-mssqldb"
 	"github.com/gin-gonic/gin"
@@ -794,4 +795,240 @@ func getAllColumnNames[T any](entity T) []string {
 		columns = append(columns, columnName)
 	}
 	return columns
+}
+
+type Op int
+
+const (
+	OpEq   Op = iota // =
+	OpNe             // !=
+	OpGt             // >
+	OpGte            // >=
+	OpLt             // <
+	OpLte            // <=
+	OpLike           // LIKE
+)
+
+func (o Op) SQL() (string, error) {
+	switch o {
+	case OpEq:
+		return "=", nil
+	case OpNe:
+		return "!=", nil
+	case OpGt:
+		return ">", nil
+	case OpGte:
+		return ">=", nil
+	case OpLt:
+		return "<", nil
+	case OpLte:
+		return "<=", nil
+	case OpLike:
+		return "LIKE", nil
+	default:
+		return "", fmt.Errorf("desteklenmeyen operator")
+	}
+}
+
+type Filter struct {
+	Field string
+	Op    Op
+	Value interface{}
+}
+
+func buildWhereFromFilters[T any](
+	filters []Filter,
+	allowed map[string]bool,
+) (string, []interface{}, error) {
+
+	if len(filters) == 0 {
+		return "", nil, nil
+	}
+
+	parts := []string{}
+	args := []interface{}{}
+	p := 1
+
+	for _, f := range filters {
+		field := strings.TrimSpace(f.Field)
+		if field == "" {
+			return "", nil, fmt.Errorf("filter field boş")
+		}
+		if !allowed[strings.ToLower(field)] {
+			return "", nil, fmt.Errorf("izin verilmeyen alan: %s", field)
+		}
+
+		opSQL, err := f.Op.SQL()
+		if err != nil {
+			return "", nil, err
+		}
+
+		param := fmt.Sprintf("p%d", p)
+		parts = append(parts, fmt.Sprintf("%s %s @%s", field, opSQL, param))
+		args = append(args, sql.Named(param, f.Value))
+		p++
+	}
+
+	return " WHERE " + strings.Join(parts, " AND "), args, nil
+}
+
+// FindOne
+// Filtreye uyan TEK kaydı döner (SQL Server TOP 1)
+//
+// Davranış:
+// - orderBy verilmezse -> Default => Id
+// - asc verilmezse     -> Default => ASC
+
+// Kullanım:
+//
+//	repo.FindOne(c, Filter{Field:"UserName", Op:OpEq, Value:"ali"})
+//	repo.FindOne(c, Filter{Field:"Age", Op:OpGt, Value:18}, false) // DESC
+//  user, err := repo.FindOne(c, Repository.Filter{Field: "Id", Op: Repository.OpEq, Value: id})
+//  user, err := repo.FindOne(c, Repository.Filter{Field: "Id", Op: Repository.OpGt, Value: id})
+
+// encUser, err := Core.Encrypt("borsoft", shared.Config.SECRETKEY)
+// user, err := repo.FindOne(c, Repository.Filter{Field: "UserName", Op: Repository.OpEq, Value: encUser})
+func (repo *Repository[T]) FindOne(
+	c *gin.Context,
+	params ...interface{},
+) (*T, error) {
+
+	// --------------------
+	// Varsayılanlar
+	// --------------------
+	orderBy := "Id"
+	asc := true
+
+	filters := make([]Filter, 0)
+
+	// --------------------
+	// Parametreleri çözümle
+	// --------------------
+	for _, p := range params {
+		switch v := p.(type) {
+		case Filter:
+			filters = append(filters, v)
+		case bool:
+			asc = v
+		default:
+			return nil, fmt.Errorf("desteklenmeyen parametre tipi: %T", p)
+		}
+	}
+
+	// --------------------
+	// orderBy doğrulama (struct alanları whitelist)
+	// --------------------
+	allowed := buildAllowedFieldSetCached[T]()
+
+	if !allowed[strings.ToLower(orderBy)] {
+		return nil, fmt.Errorf("Id alanı struct içinde bulunamadı")
+	}
+
+	// --------------------
+	// WHERE oluştur
+	// --------------------
+	whereSQL, args, err := buildWhereFromFilters[T](filters, allowed)
+	if err != nil {
+		return nil, err
+	}
+
+	// Soft delete
+	if strings.TrimSpace(whereSQL) == "" {
+		whereSQL = " WHERE ISNULL(IsDeleted, 0) = 0"
+	} else {
+		whereSQL += " AND ISNULL(IsDeleted, 0) = 0"
+	}
+
+	dir := "ASC"
+	if !asc {
+		dir = "DESC"
+	}
+
+	// --------------------
+	// SQL (TOP 1)
+	// --------------------
+	db, ctx := DB.SqlOpen(c)
+	defer db.Close()
+
+	query := fmt.Sprintf(`
+		SELECT TOP (1) *
+		FROM %s
+		%s
+		ORDER BY %s %s
+	`, getTableName[T](), whereSQL, orderBy, dir)
+
+	rows, err := db.QueryContext(*ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	if !rows.Next() {
+		return nil, errors.New("kayıt bulunamadı")
+	}
+
+	var record T
+	ptrs := make([]interface{}, len(cols))
+	for i, col := range cols {
+		f := getStructFieldByName(&record, col)
+		if f.IsValid() && f.CanAddr() {
+			ptrs[i] = f.Addr().Interface()
+		} else {
+			var dummy interface{}
+			ptrs[i] = &dummy
+		}
+	}
+
+	if err := rows.Scan(ptrs...); err != nil {
+		return nil, err
+	}
+
+	return &record, nil
+}
+
+// buildAllowedFieldSet
+// Model T içindeki alanları (FieldName + json tag) whitelist olarak çıkarır
+// Injection Engelleme amacli => Field: "Id; DROP TABLE Users" gibi...
+// Performans amacli Cacheliyorum..
+var allowedFieldCache sync.Map // key: reflect.Type, value: map[string]bool
+func buildAllowedFieldSetCached[T any]() map[string]bool {
+	var sample T
+	t := reflect.TypeOf(sample)
+	if t == nil {
+		return map[string]bool{}
+	}
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	if val, ok := allowedFieldCache.Load(t); ok {
+		return val.(map[string]bool)
+	}
+
+	allowed := make(map[string]bool)
+	if t.Kind() == reflect.Struct {
+		for i := 0; i < t.NumField(); i++ {
+			sf := t.Field(i)
+			if sf.PkgPath != "" { // unexported
+				continue
+			}
+			allowed[strings.ToLower(sf.Name)] = true
+
+			jsonTag := sf.Tag.Get("json")
+			if jsonTag != "" && jsonTag != "-" {
+				tagName := strings.Split(jsonTag, ",")[0]
+				if tagName != "" {
+					allowed[strings.ToLower(tagName)] = true
+				}
+			}
+		}
+	}
+
+	allowedFieldCache.Store(t, allowed)
+	return allowed
 }
