@@ -220,6 +220,8 @@ func GetAllUsers(c *gin.Context) Model.ServiceResponse[Model.Person] {
 	response := Model.NewServiceResponse[Model.Person](c)
 	// Call the generic GetAll method from the repository to get all users
 	users, err := repo.GetAll(c)
+	//users, err := repo.FindMany(c, 2, 1, "CreatedDate", false, Repository.Filter{Field: "Name", Op: Repository.OpLike, Value: "%e%"}) // page=2, pageSize=10 (CreatedDate DESC), WHERE UserName LIKE "%ali%"
+	//users, err := repo.FindMany(c, Repository.Filter{Field: "Age", Op: Repository.OpGte, Value: 18}) // WHERE Age >= 18
 	//users, err := repo.GetAllWithPaging(c, 2, 2, false)
 	if err != nil {
 		fmt.Println("Error fetching users:", err)

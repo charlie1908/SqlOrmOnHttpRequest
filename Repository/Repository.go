@@ -1032,3 +1032,229 @@ func buildAllowedFieldSetCached[T any]() map[string]bool {
 	allowedFieldCache.Store(t, allowed)
 	return allowed
 }
+
+// page/pageSize verilmezse: tüm kayıtları döndürür (paging yok).
+// Paging varsa: ORDER BY zorunlu olduğu için default "Id ASC" kullanılır.
+// orderBy sadece "Id" veya "CreatedDate" olabilir (aksi halde "Id").
+
+// Parametreler (variadic):
+//   Repository.Filter  => WHERE koşulu
+//   int (1. int)       => page
+//   int (2. int)       => pageSize
+//   string             => orderBy ("Id" | "CreatedDate")
+//   bool               => ascending (true=ASC, false=DESC)
+
+// Soyle Cagrilabilir:
+//
+//	repo.FindMany(c) // hepsi
+//	repo.FindMany(c, Repository.Filter{Field:"Age", Op:Repository.OpGte, Value:18}) // WHERE Age >= 18
+//	repo.FindMany(c, 1, 50) // page=1, pageSize=50 (Id ASC) Paging Ilk 50 kayit..
+//	repo.FindMany(c, 2, 10, "CreatedDate", false, Repository.Filter{Field:"UserName", Op:Repository.OpLike, Value:"%ali%"}) // page=2, pageSize=10 (CreatedDate DESC), WHERE UserName LIKE "%ali%"
+func (repo *Repository[T]) FindMany(
+	c *gin.Context,
+	params ...interface{},
+) ([]T, error) {
+
+	out := make([]T, 0)
+
+	// ---- Varsayılanlar ----
+	page := 0
+	pageSize := 0
+	asc := true
+	requestedOrderBy := ""
+	filters := make([]Filter, 0)
+
+	intCount := 0
+
+	// ---- Parametreleri çözümle ----
+	for _, p := range params {
+		switch v := p.(type) {
+		case Filter:
+			filters = append(filters, v)
+
+		case int:
+			intCount++
+			if intCount == 1 {
+				page = v
+			} else if intCount == 2 {
+				pageSize = v
+			}
+			// 2'den fazla int gelirse görmezden gel (istersen error da yapabilirsin)
+
+		case string:
+			if strings.TrimSpace(v) != "" {
+				requestedOrderBy = strings.TrimSpace(v)
+			}
+
+		case bool:
+			asc = v
+
+		default:
+			return nil, fmt.Errorf("desteklenmeyen parametre tipi: %T", p)
+		}
+	}
+
+	// PAGING
+	// hiç int yoksa -> paging yok (hepsi)
+	// sadece 1 int geldiyse -> bu pageSize yapilir. Default page=1 olur.. (kolay kullanım)
+	if intCount == 1 {
+		pageSize = page
+		page = 1
+	}
+	if page < 0 {
+		page = 0
+	}
+	if pageSize < 0 {
+		pageSize = 0
+	}
+	if pageSize > 0 && page == 0 {
+		page = 1
+	}
+
+	// orderBy whitelist (Id/CreatedDate) Sade 2 alan guvenlik amacli degisitirilebilir. Default: Paging var ise => Id, ASC default
+	orderBy := ""
+	switch strings.ToLower(requestedOrderBy) {
+	case "id":
+		orderBy = "Id"
+	case "createddate":
+		orderBy = "CreatedDate"
+	case "":
+		orderBy = "" // paging yoksa boş kalabilir
+	default:
+		// bilinmeyen -> boş (paging yoksa) veya Id (paging varsa)
+		orderBy = ""
+	}
+
+	// Paging varsa ORDER BY zorunlu: default Id
+	if pageSize > 0 && orderBy == "" {
+		orderBy = "Id"
+	}
+
+	orderDir := "ASC"
+	if !asc {
+		orderDir = "DESC"
+	}
+
+	// WHERE generate (Performans amacli Field whitelist cached)
+	allowed := buildAllowedFieldSetCached[T]()
+	whereSQL, args, err := buildWhereFromFilters[T](filters, allowed)
+	if err != nil {
+		return nil, err
+	}
+
+	// Soft delete şartı
+	if strings.TrimSpace(whereSQL) == "" {
+		whereSQL = " WHERE ISNULL(IsDeleted, 0) = 0"
+	} else {
+		whereSQL += " AND ISNULL(IsDeleted, 0) = 0"
+	}
+
+	// DB Connection
+	db, ctx := DB.SqlOpen(c)
+	defer db.Close()
+
+	table := getTableName[T]()
+
+	// Sorgu Oluşturma
+	var query string
+	queryArgs := make([]interface{}, 0, len(args)+2)
+	queryArgs = append(queryArgs, args...)
+
+	// Paging yoksa: hepsi
+	if pageSize == 0 {
+		// ORDER BY sadece istenmişse ekle (deterministik istersen default ekleyebilirsin)
+		if orderBy != "" {
+			query = fmt.Sprintf(`SELECT * FROM %s %s ORDER BY %s %s`, table, whereSQL, orderBy, orderDir)
+		} else {
+			query = fmt.Sprintf(`SELECT * FROM %s %s`, table, whereSQL)
+		}
+	} else {
+		// Paging varsa OFFSET/FETCH
+		offset := (page - 1) * pageSize
+
+		query = fmt.Sprintf(`
+			SELECT *
+			FROM %s
+			%s
+			ORDER BY %s %s
+			OFFSET @offset ROWS
+			FETCH NEXT @pageSize ROWS ONLY
+		`, table, whereSQL, orderBy, orderDir)
+
+		queryArgs = append(queryArgs,
+			sql.Named("offset", offset),
+			sql.Named("pageSize", pageSize),
+		)
+	}
+
+	// ---- Query Executer ----
+	rows, err := db.QueryContext(*ctx, query, queryArgs...)
+	if err != nil {
+		// Eğer CreatedDate seçildi ve kolonda yoksa -> Id'ye düşlur ayni paging fonksiyonundaki gibi.
+		if strings.EqualFold(orderBy, "CreatedDate") && isInvalidColumnNameErr(err) {
+			// fallback (paging varsa ORDER BY Id zorunlu) Bir de ORDER BY ile denenir..
+			if pageSize == 0 {
+				query = fmt.Sprintf(`SELECT * FROM %s %s ORDER BY Id %s`, table, whereSQL, orderDir)
+			} else {
+				offset := (page - 1) * pageSize
+				query = fmt.Sprintf(`
+					SELECT *
+					FROM %s
+					%s
+					ORDER BY Id %s
+					OFFSET @offset ROWS
+					FETCH NEXT @pageSize ROWS ONLY
+				`, table, whereSQL, orderDir)
+
+				// offset/pageSize named param zaten en sonda; yoksa zaten eklenir..
+				queryArgs = append(args,
+					sql.Named("offset", offset),
+					sql.Named("pageSize", pageSize),
+				)
+			}
+
+			//Tekrar calisitirlir ve denenir..
+			rows, err = db.QueryContext(*ctx, query, queryArgs...)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	//Tum donen rowlar alinir ve gerekli colonlar ile eslestirilir.
+	for rows.Next() {
+		var record T
+		ptrs := make([]interface{}, len(cols))
+
+		for i, col := range cols {
+			f := getStructFieldByName(&record, col)
+			if f.IsValid() && f.CanAddr() {
+				ptrs[i] = f.Addr().Interface()
+			} else {
+				var dummy interface{}
+				ptrs[i] = &dummy
+			}
+		}
+
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, err
+		}
+
+		out = append(out, record)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Not: Boş sonuç için error döndürmüyorum. En fazla bos list donebilir..
+	return out, nil
+}
