@@ -220,9 +220,29 @@ func GetAllUsers(c *gin.Context) Model.ServiceResponse[Model.Person] {
 	response := Model.NewServiceResponse[Model.Person](c)
 	// Call the generic GetAll method from the repository to get all users
 	users, err := repo.GetAll(c)
-	//users, err := repo.FindMany(c, 2, 1, "CreatedDate", false, Repository.Filter{Field: "Name", Op: Repository.OpLike, Value: "%e%"}) // page=2, pageSize=10 (CreatedDate DESC), WHERE UserName LIKE "%ali%"
+	/*users, err := repo.FindMany(
+		c,
+		"CreatedDate",
+		false,
+		Repository.Filter{Field: "Age", Op: Repository.OpLte, Value: 50},
+		Repository.Or(
+			Repository.Where(Repository.Filter{Field: "Name", Op: Repository.OpEq, Value: "Bora"}),
+			Repository.Where(Repository.Filter{Field: "Name", Op: Repository.OpEq, Value: "Secil"}),
+		),
+	) // OrderBy(CreatedDate, DESC) WHERE Age <= 50 AND (Name = "Bora" OR Name = "Secil")*/
+	/*expr := Repository.Or(
+
+		Repository.Where(Repository.Filter{Field: "Name", Op: Repository.OpEq, Value: "Bora"}),
+		Repository.Where(Repository.Filter{Field: "Name", Op: Repository.OpEq, Value: "Duru"}),
+	)
+	users, err := repo.FindMany(c, expr)*/
+	/*users, err := repo.FindMany(c,
+		Repository.Filter{Field: "Age", Op: Repository.OpGte, Value: 15},
+		Repository.Filter{Field: "Gender", Op: Repository.OpEq, Value: "Male"},
+	)*/
+	//users, err := repo.FindMany(c, 2, 1, "CreatedDate", false, Repository.Filter{Field: "Name", Op: Repository.OpLike, Value: "%e%"}) // page=2, pageSize=1 (CreatedDate DESC), WHERE UserName LIKE "%e%"
 	//users, err := repo.FindMany(c, Repository.Filter{Field: "Age", Op: Repository.OpGte, Value: 18}) // WHERE Age >= 18
-	//users, err := repo.GetAllWithPaging(c, 2, 2, false)
+	//users, err := repo.GetAllWithPaging(c, 2, 2,false) // page=2, pageSize=10 (Id DESC)
 	if err != nil {
 		fmt.Println("Error fetching users:", err)
 		response.Error = err
@@ -255,8 +275,15 @@ func GetUserById(c *gin.Context, id int) Model.ServiceResponse[Model.Person] {
 	// Call the generic GetAll method from the repository to get the user
 	//user, err := repo.FindOne(c, Repository.Filter{Field: "Id", Op: Repository.OpEq, Value: id})
 	//user, err := repo.FindOne(c, Repository.Filter{Field: "Id", Op: Repository.OpGt, Value: id})
-	//encUser, err := Core.Encrypt("borsoft", shared.Config.SECRETKEY)
-	//user, err := repo.FindOne(c, Repository.Filter{Field: "UserName", Op: Repository.OpEq, Value: encUser})
+	/*encUser, err := Core.Encrypt("borsoft", shared.Config.SECRETKEY)
+	user, err := repo.FindOne(c, Repository.Filter{Field: "UserName", Op: Repository.OpEq, Value: encUser})*/
+	/*user, err := repo.FindOne(c, "Id", false,
+		Repository.Filter{Field: "Age", Op: Repository.OpGt, Value: 10},
+		Repository.Or(
+			Repository.Where(Repository.Filter{Field: "Name", Op: Repository.OpLike, Value: "%e%"}),
+			Repository.Where(Repository.Filter{Field: "Gender", Op: Repository.OpEq, Value: "Female"}),
+		),
+	) // OrderBy(Id, DESC) WHERE Age > 10 AND (Name LIKE "%e%" OR Gender = "Female")*/
 	user, err := repo.GetByID(c, id)
 	if err != nil {
 		response.Error = fmt.Errorf("failed to get user by ID: %w", err)

@@ -836,42 +836,6 @@ type Filter struct {
 	Value interface{}
 }
 
-func buildWhereFromFilters[T any](
-	filters []Filter,
-	allowed map[string]bool,
-) (string, []interface{}, error) {
-
-	if len(filters) == 0 {
-		return "", nil, nil
-	}
-
-	parts := []string{}
-	args := []interface{}{}
-	p := 1
-
-	for _, f := range filters {
-		field := strings.TrimSpace(f.Field)
-		if field == "" {
-			return "", nil, fmt.Errorf("filter field boş")
-		}
-		if !allowed[strings.ToLower(field)] {
-			return "", nil, fmt.Errorf("izin verilmeyen alan: %s", field)
-		}
-
-		opSQL, err := f.Op.SQL()
-		if err != nil {
-			return "", nil, err
-		}
-
-		param := fmt.Sprintf("p%d", p)
-		parts = append(parts, fmt.Sprintf("%s %s @%s", field, opSQL, param))
-		args = append(args, sql.Named(param, f.Value))
-		p++
-	}
-
-	return " WHERE " + strings.Join(parts, " AND "), args, nil
-}
-
 // FindOne
 // Filtreye uyan TEK kaydı döner (SQL Server TOP 1)
 //
@@ -881,53 +845,115 @@ func buildWhereFromFilters[T any](
 
 // Kullanım:
 //
-//	repo.FindOne(c, Filter{Field:"UserName", Op:OpEq, Value:"ali"})
-//	repo.FindOne(c, Filter{Field:"Age", Op:OpGt, Value:18}, false) // DESC
+//	repo.FindOne(c, Repository.Filter{Field:"UserName", Op:OpEq, Value:"ali"})
+//	repo.FindOne(c, Repository.Filter{Field:"Age", Op:OpGt, Value:18}, false) // DESC
 //  user, err := repo.FindOne(c, Repository.Filter{Field: "Id", Op: Repository.OpEq, Value: id})
 //  user, err := repo.FindOne(c, Repository.Filter{Field: "Id", Op: Repository.OpGt, Value: id})
 
 // encUser, err := Core.Encrypt("borsoft", shared.Config.SECRETKEY)
 // user, err := repo.FindOne(c, Repository.Filter{Field: "UserName", Op: Repository.OpEq, Value: encUser})
+
+/*
+OR Example
+
+repo.FindOne(c,
+Repository.Filter{Field:"IsActive", Op:OpEq, Value:true},
+Or(
+Where(Repository.Filter{Field:"Role", Op:OpEq, Value:"Admin"}),
+Where(Repository.Filter{Field:"Age", Op:OpGt, Value:30}),
+),
+)
+*/
 func (repo *Repository[T]) FindOne(
 	c *gin.Context,
 	params ...interface{},
 ) (*T, error) {
 
-	// --------------------
-	// Varsayılanlar
-	// --------------------
+	// Varsayılanlar. "Id" Default deger...
 	orderBy := "Id"
 	asc := true
 
-	filters := make([]Filter, 0)
+	var rootExpr Expr = nil
+	pending := make([]Expr, 0, 4) // düz Filter'lar burada birikir (AND)
 
-	// --------------------
-	// Parametreleri çözümle
-	// --------------------
 	for _, p := range params {
 		switch v := p.(type) {
+
 		case Filter:
-			filters = append(filters, v)
+			//Default Filter'lar otomatik AND ile baglandi..
+			pending = append(pending, Pred{F: v})
+
+		case Expr:
+			// önce Pending Filter'ları root'a AND grubu olarak bağlanir..
+			if len(pending) > 0 {
+				andGroup := Group{Op: LogicAnd, Items: pending}
+				if rootExpr == nil {
+					rootExpr = andGroup
+				} else {
+					rootExpr = Group{Op: LogicAnd, Items: []Expr{rootExpr, andGroup}}
+				}
+				pending = nil
+			}
+
+			// Expr'i Root'a eklemir (Default bağlama kosulu => AND)
+			if rootExpr == nil {
+				rootExpr = v
+			} else {
+				rootExpr = Group{Op: LogicAnd, Items: []Expr{rootExpr, v}}
+			}
+
+		case string:
+			if strings.TrimSpace(v) != "" {
+				orderBy = strings.TrimSpace(v)
+			}
+
 		case bool:
 			asc = v
+
 		default:
 			return nil, fmt.Errorf("desteklenmeyen parametre tipi: %T", p)
 		}
 	}
 
+	// döngü bitti, Pending durumu var ise root'a eklenir..
+	if len(pending) > 0 {
+		andGroup := Group{Op: LogicAnd, Items: pending}
+		if rootExpr == nil {
+			rootExpr = andGroup
+		} else {
+			rootExpr = Group{Op: LogicAnd, Items: []Expr{rootExpr, andGroup}}
+		}
+	}
+	//(orderBy normalize / whitelist) OrderBy sadece Id veya CreatedDate'e gore yapilir..
+	requestedOrderBy := strings.TrimSpace(orderBy)
+	switch strings.ToLower(requestedOrderBy) {
+	case "":
+		// boşsa default kalsın: Id
+	case "id":
+		orderBy = "Id"
+	case "createddate":
+		orderBy = "CreatedDate"
+	default:
+		// bilinmeyen gelirse güvenli fallback
+		orderBy = "Id"
+	}
+
 	// --------------------
 	// orderBy doğrulama (struct alanları whitelist)
+	//!!!YUKARIDAKI "CreatedDate" ve "Id" alanlari cikarilirsa bu kisim [allowed] elzem olur. Injection Guvenlik amacli. Yukarisi yeterli ise bu kisim [allowed] performans amacli cikarilabilir.
 	// --------------------
 	allowed := buildAllowedFieldSetCached[T]()
 
+	//Sadece whitelist'deki alanlara izin verilir. Performans amacli Cacheleniyor.'
 	if !allowed[strings.ToLower(orderBy)] {
-		return nil, fmt.Errorf("Id alanı struct içinde bulunamadı")
+		return nil, fmt.Errorf("izin verilmeyen orderBy alanı: %s", orderBy)
 	}
 
 	// --------------------
 	// WHERE oluştur
 	// --------------------
-	whereSQL, args, err := buildWhereFromFilters[T](filters, allowed)
+	//whereSQL, args, err := buildWhereFromFilters[T](filters, allowed)
+	whereSQL, args, err := buildWhereFromExpr[T](rootExpr, allowed)
 	if err != nil {
 		return nil, err
 	}
@@ -1050,6 +1076,42 @@ func buildAllowedFieldSetCached[T any]() map[string]bool {
 //	repo.FindMany(c, Repository.Filter{Field:"Age", Op:Repository.OpGte, Value:18}) // WHERE Age >= 18
 //	repo.FindMany(c, 1, 50) // page=1, pageSize=50 (Id ASC) Paging Ilk 50 kayit..
 //	repo.FindMany(c, 2, 10, "CreatedDate", false, Repository.Filter{Field:"UserName", Op:Repository.OpLike, Value:"%ali%"}) // page=2, pageSize=10 (CreatedDate DESC), WHERE UserName LIKE "%ali%"
+
+/*
+AND Example
+
+repo.FindMany(c,
+
+		Repository.Filter{Field: "Age", Op: Repository.OpGte, Value: 15},
+		Repository.Filter{Field: "Gender", Op: Repository.OpEq, Value: "Male"},
+	)
+
+-----------------------------
+OR Example
+
+expr := Or(
+
+	Where(Repository.Filter{Field:"UserName", Op:OpEq, Value:"ali"}),
+	Where(Repository.Filter{Field:"UserName", Op:OpEq, Value:"veli"}),
+
+)
+repo.FindMany(c, expr)
+
+-----------------------------
+OR, ORDERBY DESC Example
+
+repo.FindMany(
+
+		c,
+		"CreatedDate",
+		false,
+		Repository.Filter{Field: "Age", Op: Repository.OpLte, Value: 50},
+		Repository.Or(
+			Repository.Where(Repository.Filter{Field: "Name", Op: Repository.OpEq, Value: "Bora"}),
+			Repository.Where(Repository.Filter{Field: "Name", Op: Repository.OpEq, Value: "Secil"}),
+		),
+	) // OrderBy(CreatedDate, DESC) WHERE Age <= 50 AND (Name = "Bora" OR Name = "Secil")
+*/
 func (repo *Repository[T]) FindMany(
 	c *gin.Context,
 	params ...interface{},
@@ -1062,15 +1124,42 @@ func (repo *Repository[T]) FindMany(
 	pageSize := 0
 	asc := true
 	requestedOrderBy := ""
-	filters := make([]Filter, 0)
 
 	intCount := 0
 
-	// ---- Parametreleri çözümle ----
+	var rootExpr Expr = nil
+	pending := make([]Expr, 0, 4)
+
+	// Not: FindMany’de zaten page/pageSize/orderBy/asc parsing’in vardıysa,
+	// asc burada set ediliyorsa aynı asc değişkenini kullan.
 	for _, p := range params {
 		switch v := p.(type) {
+
 		case Filter:
-			filters = append(filters, v)
+			pending = append(pending, Pred{F: v})
+
+		case Expr:
+			if len(pending) > 0 {
+				andGroup := Group{Op: LogicAnd, Items: pending}
+				if rootExpr == nil {
+					rootExpr = andGroup
+				} else {
+					rootExpr = Group{Op: LogicAnd, Items: []Expr{rootExpr, andGroup}}
+				}
+				pending = nil
+			}
+
+			if rootExpr == nil {
+				rootExpr = v
+			} else {
+				rootExpr = Group{Op: LogicAnd, Items: []Expr{rootExpr, v}}
+			}
+
+			//OrderBy Field parametresi Id - CreatedDate
+		case string:
+			if strings.TrimSpace(v) != "" {
+				requestedOrderBy = strings.TrimSpace(v)
+			}
 
 		case int:
 			intCount++
@@ -1079,54 +1168,64 @@ func (repo *Repository[T]) FindMany(
 			} else if intCount == 2 {
 				pageSize = v
 			}
-			// 2'den fazla int gelirse görmezden gel (istersen error da yapabilirsin)
 
-		case string:
-			if strings.TrimSpace(v) != "" {
-				requestedOrderBy = strings.TrimSpace(v)
-			}
-
+		// FindMany bool asc or desc parametresi
 		case bool:
 			asc = v
+
+		// FindMany’de paging/orderBy parametrelerini parse ediyorsan onlar da burada duracak
+		// case int: ...
+		// case string: ...
 
 		default:
 			return nil, fmt.Errorf("desteklenmeyen parametre tipi: %T", p)
 		}
 	}
 
+	if len(pending) > 0 {
+		andGroup := Group{Op: LogicAnd, Items: pending}
+		if rootExpr == nil {
+			rootExpr = andGroup
+		} else {
+			rootExpr = Group{Op: LogicAnd, Items: []Expr{rootExpr, andGroup}}
+		}
+	}
+
 	// PAGING
 	// hiç int yoksa -> paging yok (hepsi)
 	// sadece 1 int geldiyse -> bu pageSize yapilir. Default page=1 olur.. (kolay kullanım)
+	// Tek int geldiyse: FindMany(c, 50) => pageSize=50, page=1
 	if intCount == 1 {
 		pageSize = page
 		page = 1
 	}
-	if page < 0 {
-		page = 0
-	}
+
+	// Negatif pageSize paging'i kapatir
 	if pageSize < 0 {
 		pageSize = 0
 	}
-	if pageSize > 0 && page == 0 {
+
+	// Paging açıksa page en az 1 olmalı
+	if pageSize > 0 && page < 1 {
 		page = 1
 	}
 
+	// Max pageSize 100 seklinde sinirlandirlabilir..
+	/*if pageSize > 100 {
+		pageSize = 100
+	}*/
+
 	// orderBy whitelist (Id/CreatedDate) Sade 2 alan guvenlik amacli degisitirilebilir. Default: Paging var ise => Id, ASC default
-	orderBy := ""
+	orderBy := "Id" // default her zaman Id
 	switch strings.ToLower(requestedOrderBy) {
+	case "":
+		// boşsa default kalsın: Id
 	case "id":
 		orderBy = "Id"
 	case "createddate":
 		orderBy = "CreatedDate"
-	case "":
-		orderBy = "" // paging yoksa boş kalabilir
 	default:
-		// bilinmeyen -> boş (paging yoksa) veya Id (paging varsa)
-		orderBy = ""
-	}
-
-	// Paging varsa ORDER BY zorunlu: default Id
-	if pageSize > 0 && orderBy == "" {
+		// bilinmeyen gelirse güvenli fallback
 		orderBy = "Id"
 	}
 
@@ -1137,7 +1236,9 @@ func (repo *Repository[T]) FindMany(
 
 	// WHERE generate (Performans amacli Field whitelist cached)
 	allowed := buildAllowedFieldSetCached[T]()
-	whereSQL, args, err := buildWhereFromFilters[T](filters, allowed)
+	//whereSQL, args, err := buildWhereFromFilters[T](filters, allowed)
+	whereSQL, args, err := buildWhereFromExpr[T](rootExpr, allowed)
+
 	if err != nil {
 		return nil, err
 	}
@@ -1162,12 +1263,7 @@ func (repo *Repository[T]) FindMany(
 
 	// Paging yoksa: hepsi
 	if pageSize == 0 {
-		// ORDER BY sadece istenmişse ekle (deterministik istersen default ekleyebilirsin)
-		if orderBy != "" {
-			query = fmt.Sprintf(`SELECT * FROM %s %s ORDER BY %s %s`, table, whereSQL, orderBy, orderDir)
-		} else {
-			query = fmt.Sprintf(`SELECT * FROM %s %s`, table, whereSQL)
-		}
+		query = fmt.Sprintf(`SELECT * FROM %s %s ORDER BY %s %s`, table, whereSQL, orderBy, orderDir)
 	} else {
 		// Paging varsa OFFSET/FETCH
 		offset := (page - 1) * pageSize
@@ -1181,6 +1277,8 @@ func (repo *Repository[T]) FindMany(
 			FETCH NEXT @pageSize ROWS ONLY
 		`, table, whereSQL, orderBy, orderDir)
 
+		queryArgs = make([]interface{}, 0, len(args)+2)
+		queryArgs = append(queryArgs, args...)
 		queryArgs = append(queryArgs,
 			sql.Named("offset", offset),
 			sql.Named("pageSize", pageSize),
@@ -1207,10 +1305,13 @@ func (repo *Repository[T]) FindMany(
 				`, table, whereSQL, orderDir)
 
 				// offset/pageSize named param zaten en sonda; yoksa zaten eklenir..
-				queryArgs = append(args,
+				queryArgs = make([]interface{}, 0, len(args)+2)
+				queryArgs = append(queryArgs, args...)
+				queryArgs = append(queryArgs,
 					sql.Named("offset", offset),
 					sql.Named("pageSize", pageSize),
 				)
+
 			}
 
 			//Tekrar calisitirlir ve denenir..
@@ -1257,4 +1358,126 @@ func (repo *Repository[T]) FindMany(
 
 	// Not: Boş sonuç için error döndürmüyorum. En fazla bos list donebilir..
 	return out, nil
+}
+
+type Logic int
+
+const (
+	LogicAnd Logic = iota
+	LogicOr
+)
+
+type Expr interface {
+	isExpr()
+}
+
+// Tek koşul
+type Pred struct {
+	F Filter
+}
+
+// Predicate (F) => Field (F.Field) Op (F.Op) Value (F.Value)
+func (Pred) isExpr() {}
+
+// Grup (AND / OR)
+type Group struct {
+	Op    Logic
+	Items []Expr
+}
+
+func (Group) isExpr() {}
+
+func And(exprs ...Expr) Expr {
+	return Group{Op: LogicAnd, Items: exprs}
+}
+
+func Or(exprs ...Expr) Expr {
+	return Group{Op: LogicOr, Items: exprs}
+}
+
+// Düz Filter listesi = AND => Tanimli bir sey yok ise default AND
+func Where(filters ...Filter) Expr {
+	items := make([]Expr, 0, len(filters))
+	for _, f := range filters {
+		items = append(items, Pred{F: f})
+	}
+	return Group{Op: LogicAnd, Items: items}
+}
+
+func buildWhereFromExpr[T any](
+	root Expr,
+	allowed map[string]bool,
+) (string, []interface{}, error) {
+
+	if root == nil {
+		return "", nil, nil
+	}
+
+	args := []interface{}{}
+	paramIndex := 1
+
+	var walk func(e Expr) (string, error)
+
+	walk = func(e Expr) (string, error) {
+		switch v := e.(type) {
+
+		case Pred:
+			field := strings.TrimSpace(v.F.Field)
+			if !allowed[strings.ToLower(field)] {
+				return "", fmt.Errorf("izin verilmeyen alan: %s", field)
+			}
+
+			op, err := v.F.Op.SQL()
+			if err != nil {
+				return "", err
+			}
+
+			p := fmt.Sprintf("p%d", paramIndex)
+			paramIndex++
+			args = append(args, sql.Named(p, v.F.Value))
+
+			return fmt.Sprintf("%s %s @%s", field, op, p), nil
+
+		case Group:
+			if len(v.Items) == 0 {
+				return "", nil
+			}
+
+			join := " AND "
+			if v.Op == LogicOr {
+				join = " OR "
+			}
+
+			parts := []string{}
+			for _, it := range v.Items {
+				s, err := walk(it)
+				if err != nil {
+					return "", err
+				}
+				if s != "" {
+					parts = append(parts, s)
+				}
+			}
+
+			if len(parts) == 0 {
+				return "", nil
+			}
+
+			return "(" + strings.Join(parts, join) + ")", nil
+
+		default:
+			return "", fmt.Errorf("desteklenmeyen expr tipi")
+		}
+	}
+
+	sqlExpr, err := walk(root)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// Filter yok ise Where koymuyoruz..
+	if strings.TrimSpace(sqlExpr) == "" {
+		return "", args, nil
+	}
+	return " WHERE " + sqlExpr, args, nil
 }
