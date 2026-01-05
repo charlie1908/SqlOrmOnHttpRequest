@@ -31,6 +31,8 @@ func (repo *Repository[T]) Insert(entity T, c *gin.Context) (bool, error) {
 	db, ctx := DB.SqlOpen(c)
 	defer db.Close()
 
+	allowed := buildAllowedFieldSetCached[T]()
+
 	// 1. GetAll field-value map from entity
 	fieldMap := getFieldMap(entity) // map[string]interface{}
 	if len(fieldMap) == 0 {
@@ -43,6 +45,17 @@ func (repo *Repository[T]) Insert(entity T, c *gin.Context) (bool, error) {
 	args := []interface{}{}
 	i := 1
 	for col, val := range fieldMap {
+		//ONEMLI IDENTITY kolonu insert edilmez.Is Identity => Yes durumunda
+		//1️⃣ Identity kolonu atlanir
+		if strings.EqualFold(col, "id") {
+			continue
+		}
+
+		// 2️⃣ Injection koruması (kolon whitelist)
+		if !allowed[strings.ToLower(col)] {
+			return false, fmt.Errorf("izin verilmeyen kolon: %s", col)
+		}
+
 		if i > 1 {
 			columns += ", "
 			values += ", "
@@ -129,11 +142,45 @@ func (repo *Repository[T]) BulkInsertBatched(entities []T, c *gin.Context, batch
 		return false, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	paramCounter := 1
+	//paramCounter := 1
 	tableName := getTableName[T]()
-	allFields := getAllColumnNames(entities[0])
 
+	// 🔐 Injection koruması: struct alan whitelist (cache’li)
+	allowed := buildAllowedFieldSetCached[T]() //Tabloya ait Cacheli kolon isimleri alinir.
+
+	// ---- Kolon listesi (1 kere çıkarılır) ----
+	//allFields := getAllColumnNames(entities[0])
+	allFieldsRaw := getAllColumnNames(entities[0])
+
+	allFields := make([]string, 0, len(allFieldsRaw))
+	for _, col := range allFieldsRaw {
+
+		// ONEMLI IDENTITY kolonu insert edilmez (Identity = Yes)
+		// 1️⃣ Identity kolonu atla
+		if strings.EqualFold(col, "id") {
+			continue
+		}
+
+		// 2️⃣ Injection koruması
+		if !allowed[strings.ToLower(col)] {
+			tx.Rollback()
+			return false, fmt.Errorf("izin verilmeyen kolon: %s", col)
+		}
+
+		allFields = append(allFields, col)
+	}
+	//----------------------
+
+	//Guvenlik...
+	if batchSize <= 0 {
+		batchSize = len(entities)
+	}
+
+	// ---- Batch insert ----
 	for i := 0; i < len(entities); i += batchSize {
+
+		paramCounter := 1 //uzun batch’lerde param numarası çok büyüyebilir..
+
 		end := i + batchSize
 		if end > len(entities) {
 			end = len(entities)
@@ -146,7 +193,8 @@ func (repo *Repository[T]) BulkInsertBatched(entities []T, c *gin.Context, batch
 
 		for _, entity := range batch {
 			fieldMap := getFieldMap(entity)
-			var valuePlaceholders []string
+			//var valuePlaceholders []string
+			valuePlaceholders := make([]string, 0, len(allFields))
 			for _, col := range allFields {
 				ph := fmt.Sprintf("@p%d", paramCounter)
 				valuePlaceholders = append(valuePlaceholders, ph)
